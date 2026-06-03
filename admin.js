@@ -7410,7 +7410,7 @@ function pdvSelecionarTipo(tipo, btn) {
     .forEach((b) => b.classList.remove("active"));
   if (btn) btn.classList.add("active");
   const delivRow = document.getElementById("pdv-delivery-row");
-  if (delivRow) delivRow.style.display = tipo === "delivery" ? "" : "none";
+  if (delivRow) delivRow.style.display = tipo === "delivery" ? "block" : "none";
   atualizarCarrinhoPDV();
 }
 
@@ -9060,7 +9060,9 @@ function limparCarrinhoPDV() {
   const _set = (id, val = "") => { const el = document.getElementById(id); if (el) el.value = val; };
   _set("balcao-cliente"); _set("balcao-mesa"); _set("balcao-telefone");
   _set("balcao-endereco"); _set("balcao-geo-lat"); _set("balcao-geo-lng");
-  _set("balcao-frete"); _set("pdv-desconto-val");
+  _set("balcao-frete"); _set("pdv-desconto-val"); _set("balcao-gmaps-link");
+  const _btnAbrirGmaps = document.getElementById("btn-abrir-gmaps");
+  if (_btnAbrirGmaps) { _btnAbrirGmaps.style.display = "none"; _btnAbrirGmaps.href = "#"; }
   const descTipo = document.getElementById("pdv-desconto-tipo");
   if (descTipo) descTipo.value = "fixo";
 
@@ -11485,8 +11487,12 @@ function toggleDeliveryRowPDV(tipo) {
   if (tipo !== "delivery") {
     const freteInput = document.getElementById("balcao-frete");
     const msg = document.getElementById("frete-msg-pdv");
+    const gmapsLink = document.getElementById("balcao-gmaps-link");
+    const btnAbrir = document.getElementById("btn-abrir-gmaps");
     if (freteInput) freteInput.value = "";
     if (msg) msg.innerHTML = "";
+    if (gmapsLink) gmapsLink.value = "";
+    if (btnAbrir) { btnAbrir.style.display = "none"; btnAbrir.href = "#"; }
   }
   atualizarCarrinhoPDV();
 }
@@ -11506,52 +11512,68 @@ async function obterDistanciaPelaRota(latDestino, lngDestino) {
   }
 }
 
+// ── Helper: extrai lat/lng de um link do Google Maps ─────────────────
+function _extrairCoordsGmaps(linkStr) {
+  if (!linkStr) return { lat: null, lng: null };
+  const patterns = [
+    /[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
+    /@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
+    /\/place\/[^/@]*\/@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
+    /maps\?.*ll=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
+  ];
+  for (const rx of patterns) {
+    const m = linkStr.match(rx);
+    if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
+  }
+  return { lat: null, lng: null };
+}
+
+// ── Helper: chamado quando o usuario cola/digita no campo link gmaps ──
+function pdvOnGmapsLinkInput(val) {
+  const btnAbrir = document.getElementById("btn-abrir-gmaps");
+  const v = (val || "").trim();
+  if (!btnAbrir) return;
+  if (v.startsWith("http")) {
+    btnAbrir.href = v;
+    btnAbrir.style.display = "inline-flex";
+  } else {
+    btnAbrir.style.display = "none";
+  }
+}
+
 async function calcularFretePDV() {
   const btn = document.getElementById("btn-gps-pdv");
   const msg = document.getElementById("frete-msg-pdv");
   const freteInput = document.getElementById("balcao-frete");
 
   btn.disabled = true;
-  btn.innerText = "⏳";
+  btn.innerHTML = "⏳";
   msg.innerHTML = '<span style="color:#888">Localizando...</span>';
 
-  // ── Tenta extrair coordenadas do link colado no campo endereço ────────
+  // ── Tenta extrair coordenadas: primeiro do campo Google Maps Link,
+  //    depois do campo endereço (retro-compatibilidade)
+  const gmapsLinkVal = (
+    document.getElementById("balcao-gmaps-link")?.value || ""
+  ).trim();
   const endVal = (
     document.getElementById("balcao-endereco")?.value || ""
   ).trim();
-  let lat = null,
-    lng = null;
 
-  if (endVal) {
-    // Formatos comuns do Google Maps:
-    // https://maps.google.com/?q=-25.2867,-57.6471
-    // https://www.google.com/maps/@-25.2867,-57.6471,17z
-    // https://goo.gl/maps/... (encurtado — não parseable sem request)
-    // https://maps.app.goo.gl/... (novo encurtado)
-    // https://www.google.com/maps/place/.../@-25.2867,-57.6471,...
-    const patterns = [
-      /[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-      /@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-      /\/place\/[^/@]*\/@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-      /maps\?.*ll=(-?\d+\.?\d*),(-?\d+\.?\d*)/,
-    ];
-    for (const rx of patterns) {
-      const m = endVal.match(rx);
-      if (m) {
-        lat = parseFloat(m[1]);
-        lng = parseFloat(m[2]);
-        break;
-      }
-    }
+  // Prioridade: campo gmaps-link → campo endereço (pode conter link tb)
+  let { lat, lng } = _extrairCoordsGmaps(gmapsLinkVal);
+  if (lat === null) {
+    const fromEnd = _extrairCoordsGmaps(endVal);
+    lat = fromEnd.lat;
+    lng = fromEnd.lng;
   }
 
   // ── Se não extraiu do link, usa GPS do dispositivo ────────────────────
   if (lat === null || lng === null) {
     if (!navigator.geolocation) {
       msg.innerHTML =
-        '<span style="color:#e74c3c">Cole um link do Google Maps ou use um celular com GPS</span>';
+        '<span style="color:#e74c3c">Cole um link do Google Maps no campo acima ou use um celular com GPS</span>';
       btn.disabled = false;
-      btn.innerText = "📍 Rota";
+      btn.innerHTML = "📍 Calcular";
       return;
     }
     let position;
@@ -11564,9 +11586,9 @@ async function calcularFretePDV() {
       );
     } catch {
       msg.innerHTML =
-        '<span style="color:#e74c3c">Cole um link do Google Maps no campo endereço, ou permita o GPS</span>';
+        '<span style="color:#e74c3c">Cole um link do Google Maps no campo acima, ou permita o GPS</span>';
       btn.disabled = false;
-      btn.innerText = "📍 Rota";
+      btn.innerHTML = "📍 Calcular";
       return;
     }
     lat = position.coords.latitude;
@@ -11617,7 +11639,7 @@ async function calcularFretePDV() {
     msg.innerHTML = `<span style="color:#e67e22">⚠️ ${dist.toFixed(1)}km (${nota}) — combinar frete</span>`;
     freteInput.value = "";
     btn.disabled = false;
-    btn.innerText = "📍 Rota";
+    btn.innerHTML = "📍 Calcular";
     atualizarCarrinhoPDV();
     return;
   }
@@ -11637,7 +11659,7 @@ async function calcularFretePDV() {
   const aviso = usouRota ? "" : ' <em style="color:#e67e22">(estimativa)</em>';
   msg.innerHTML = `<span style="color:#27ae60">✅ ${dist.toFixed(1)}km ${nota} → Gs ${frete.toLocaleString("es-PY")}</span>${aviso}`;
   btn.disabled = false;
-  btn.innerText = "📍 Rota";
+  btn.innerHTML = "📍 Calcular";
   atualizarCarrinhoPDV();
 }
 

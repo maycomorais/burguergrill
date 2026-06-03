@@ -4455,7 +4455,6 @@ body.sidebar-collapsed .main-content {
 
 /* Delivery row (inicialmente oculta) */
 #pdv-delivery-row {
-    display: none;
     margin-top: 12px;
 }
 

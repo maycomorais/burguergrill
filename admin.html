@@ -557,22 +557,56 @@
 
               <!-- Delivery row -->
               <div id="pdv-delivery-row" style="display:none;padding:0 8px 6px">
+
+                <!-- Endereço de texto -->
                 <label class="pdv-dir-label">📍 <span data-i18n="pdv.endereco">Endereço</span></label>
                 <input type="text" id="balcao-endereco" class="pdv-dir-input"
-                  data-i18n-ph="pdv.endereco_ph" placeholder="Cole o endereço ou link do Google Maps" />
+                  data-i18n-ph="pdv.endereco_ph" placeholder="Rua, número, bairro..." />
+
+                <!-- Link do Google Maps -->
+                <label class="pdv-dir-label" style="margin-top:5px">
+                  🗺️ <span data-i18n="pdv.link_gmaps">Link Google Maps</span>
+                </label>
+                <div style="display:flex;gap:5px;align-items:center">
+                  <input type="url" id="balcao-gmaps-link" class="pdv-dir-input"
+                    placeholder="https://maps.app.goo.gl/... ou cole o link copiado"
+                    style="flex:1;font-size:0.78rem"
+                    oninput="pdvOnGmapsLinkInput(this.value)" />
+                  <a id="btn-abrir-gmaps" href="#" target="_blank" rel="noopener"
+                    title="Abrir no Google Maps"
+                    style="display:none;padding:6px 8px;background:#4285f4;color:#fff;border-radius:5px;
+                           font-size:0.8rem;text-decoration:none;white-space:nowrap;line-height:1.4">
+                    🔗
+                  </a>
+                </div>
+
                 <input type="hidden" id="balcao-geo-lat" value="">
                 <input type="hidden" id="balcao-geo-lng" value="">
-                <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
-                  <input type="number" id="balcao-frete" class="pdv-dir-input"
-                    placeholder="Frete (Gs)" min="0" step="1000"
-                    style="border-color:#27ae60;flex:1" oninput="atualizarCarrinhoPDV()" />
-                  <button onclick="calcularFretePDV()"
-                    style="padding:6px 10px;background:#1a7a2e;color:#fff;border:none;
-                           border-radius:5px;font-size:0.76rem;cursor:pointer;font-weight:700;white-space:nowrap">
-                    📍 Rota
-                  </button>
+
+                <!-- Frete + botão calcular -->
+                <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+                  <div style="flex:1">
+                    <label class="pdv-dir-label">🛵 <span data-i18n="pdv.frete_label">Valor Delivery (Gs)</span></label>
+                    <input type="number" id="balcao-frete" class="pdv-dir-input"
+                      placeholder="Gs 0" min="0" step="1000"
+                      style="border-color:#27ae60;width:100%;box-sizing:border-box"
+                      oninput="atualizarCarrinhoPDV()" />
+                  </div>
+                  <div style="flex-shrink:0;padding-top:18px">
+                    <button id="btn-gps-pdv" onclick="calcularFretePDV()"
+                      style="padding:8px 11px;background:linear-gradient(135deg,#1a7a2e,#145a22);
+                             color:#fff;border:none;border-radius:7px;font-size:0.78rem;
+                             cursor:pointer;font-weight:700;white-space:nowrap;
+                             display:flex;align-items:center;gap:4px;height:36px">
+                      📍 <span data-i18n="pdv.calcular_frete">Calcular</span>
+                    </button>
+                  </div>
                 </div>
-                <div id="frete-msg-pdv" style="font-size:0.76rem;margin-top:3px;min-height:14px"></div>
+
+                <!-- Mensagem de resultado do cálculo -->
+                <div id="frete-msg-pdv"
+                  style="font-size:0.76rem;margin-top:4px;min-height:16px;
+                         padding:3px 6px;border-radius:5px;transition:background .2s"></div>
               </div>
 
               <!-- Desconto -->
