@@ -1667,29 +1667,52 @@ async function calcularFinanceiro() {
   // ── 1. Carrega/verifica sessão ativa ─────────────────────────────
   await _carregarSessaoCaixa();
 
-  // ── 2. Se não houver sessão aberta, exibe alerta de abertura ─────
+  // ── 2. Sem sessão aberta: gestor usa filtro de datas; funcionário vê alerta ─
+  const _TZ_PY = 4 * 60 * 60 * 1000; // UTC-4 Paraguai (ms)
+
+  // Helper: converte YYYY-MM-DD local PY → ISO UTC
+  const _localParaUtc = (ymd, hora) =>
+    new Date(new Date(ymd + hora).getTime() + _TZ_PY).toISOString();
+
+  // Helper: Date → "YYYY-MM-DD" no fuso PY (sem distorção UTC)
+  const _dataLocalPY = (d) => {
+    const loc = new Date(d.getTime() - _TZ_PY);
+    return loc.toISOString().split("T")[0];
+  };
+
+  let utcI, utcF;
+
   if (!_sessaoCaixaAtiva) {
-    _exibirAlertaAberturaCaixa();
-    return; // não renderiza nada enquanto não houver sessão
-  }
+    if (!ehGestor) {
+      // Funcionário sem caixa aberto: exibe alerta e para
+      _exibirAlertaAberturaCaixa();
+      return;
+    }
+    // Gestor sem caixa aberto: usa filtro de datas (ou hoje como padrão)
+    const hoje = _dataLocalPY(new Date());
+    if (!elInicio.value) elInicio.value = hoje;
+    if (!elFim.value)    elFim.value    = hoje;
+    utcI = _localParaUtc(elInicio.value, "T00:00:00");
+    utcF = _localParaUtc(elFim.value,    "T23:59:59");
+  } else {
+    // ── 3. Define intervalo de tempo baseado na SESSÃO ─────────────────
+    // BUG 3 FIX: converte aberto_em para data local PY, não UTC, evitando
+    // que sessões que fecham após meia-noite sejam atribuídas ao dia seguinte.
+    const sessaoInicio = _sessaoCaixaAtiva.aberto_em;
+    const sessaoFim    = _sessaoCaixaAtiva.fechado_em || new Date().toISOString();
 
-  // ── 3. Define intervalo de tempo baseado na SESSÃO, não no calendário ─
-  const sessaoInicio = _sessaoCaixaAtiva.aberto_em;
-  const sessaoFim    = _sessaoCaixaAtiva.fechado_em || new Date().toISOString();
-
-  // Gestores podem sobrepor o intervalo com o filtro de datas da tela
-  let utcI = sessaoInicio;
-  let utcF = sessaoFim;
-  if (ehGestor && elInicio.value && elFim.value) {
-    const _tz = 4 * 60 * 60 * 1000; // UTC-4 PY
-    utcI = new Date(new Date(elInicio.value + "T00:00:00").getTime() + _tz).toISOString();
-    utcF = new Date(new Date(elFim.value   + "T23:59:59").getTime() + _tz).toISOString();
-  } else if (!elInicio.value || !elFim.value) {
-    // Preenche os campos de data com os valores da sessão para exibição
-    const dAbr = new Date(sessaoInicio);
-    elInicio.value = dAbr.toISOString().split("T")[0];
-    const dFch = new Date(sessaoFim);
-    elFim.value    = dFch.toISOString().split("T")[0];
+    if (ehGestor && elInicio.value && elFim.value) {
+      // Gestor sobrepõe com filtro manual de datas
+      utcI = _localParaUtc(elInicio.value, "T00:00:00");
+      utcF = _localParaUtc(elFim.value,    "T23:59:59");
+    } else {
+      // Usa intervalo exato da sessão
+      utcI = sessaoInicio;
+      utcF = sessaoFim;
+      // Preenche os campos com a DATA LOCAL PY da abertura/fechamento (Bug 3 fix)
+      if (!elInicio.value) elInicio.value = _dataLocalPY(new Date(sessaoInicio));
+      if (!elFim.value)    elFim.value    = _dataLocalPY(new Date(sessaoFim));
+    }
   }
 
   const tipoFiltro    = elTipo.value;
@@ -1724,17 +1747,20 @@ async function calcularFinanceiro() {
   else if (facturaFiltro === "sem_factura")
     peds = peds.filter((p) => !p.dados_factura?.ruc && !p.dados_factura?.ci);
 
-  // ── 5. Movimentações de caixa da SESSÃO ──────────────────────────
-  let caixaQuery = supa
-    .from("movimentacoes_caixa")
-    .select("*")
-    .eq("sessao_id", _sessaoCaixaAtiva.id); // vínculo direto à sessão
-  if (!ehGestor) caixaQuery = caixaQuery.eq("usuario_email", emailAtual);
+  // ── 5. Movimentações de caixa (só quando há sessão ativa) ─────────
+  let caixa = [];
+  if (_sessaoCaixaAtiva) {
+    let caixaQuery = supa
+      .from("movimentacoes_caixa")
+      .select("*")
+      .eq("sessao_id", _sessaoCaixaAtiva.id); // vínculo direto à sessão
+    if (!ehGestor) caixaQuery = caixaQuery.eq("usuario_email", emailAtual);
+    const { data: caixaData } = await caixaQuery;
+    caixa = caixaData || [];
+  }
 
-  const { data: caixa } = await caixaQuery;
-
-  // Verifica bloqueio de caixa (sangria limite)
-  _verificarBloqueioCaixa(emailAtual);
+  // Verifica bloqueio de caixa (sangria limite) — só quando há sessão ativa
+  if (_sessaoCaixaAtiva) _verificarBloqueioCaixa(emailAtual);
 
   // ── 6. Cálculos (inalterado) ──────────────────────────────────────
   const safeNum = (v) => {
@@ -1753,10 +1779,31 @@ async function calcularFinanceiro() {
     faturamento += val;
     qtdPedidos++;
     const pag = (p.forma_pagamento || "").toLowerCase();
-    if (pag.includes("pix"))          totalPix    += val;
-    else if (pag.includes("transfer")) totalTransf += val;
-    else if (pag.includes("cartao") || pag.includes("cartão")) totalCartao += val;
-    else if (pag.includes("efetivo") || pag.includes("dinheiro")) totalEfetivo += val;
+    if (pag === "multipagamento") {
+      // Multipagamento: parceia os valores pelo obs_pagamento
+      try {
+        const partes = JSON.parse(p.obs_pagamento || "[]");
+        if (Array.isArray(partes)) {
+          partes.forEach((parte) => {
+            const pv  = safeNum(parte.valor);
+            const pm  = (parte.metodo || "").toLowerCase();
+            if (pm.includes("pix"))                                       totalPix    += pv;
+            else if (pm.includes("transfer") || pm.includes("alias"))     totalTransf += pv;
+            else if (pm.includes("cartao") || pm.includes("cartão") ||
+                     pm.includes("cartao") || pm.includes("tarjeta"))     totalCartao += pv;
+            else if (pm.includes("efetivo") || pm.includes("dinheiro") ||
+                     pm.includes("efectivo"))                             totalEfetivo += pv;
+            else                                                          totalEfetivo += pv; // fallback
+          });
+        } else { totalEfetivo += val; }
+      } catch (_) { totalEfetivo += val; }
+    } else if (pag.includes("pix"))                                       totalPix    += val;
+    else if (pag.includes("transfer") || pag.includes("alias"))          totalTransf += val;
+    else if (pag.includes("cartao")   || pag.includes("cartão") ||
+             pag.includes("tarjeta"))                                     totalCartao += val;
+    else if (pag.includes("efetivo")  || pag.includes("dinheiro") ||
+             pag.includes("efectivo"))                                    totalEfetivo += val;
+    else                                                                  totalEfetivo += val; // fallback: não perde valor
     if (p.tipo_entrega === "delivery") {
       const taxa = safeNum(p.frete_motoboy) || TAXA_MOTOBOY || 0;
       custoEntregas += taxa;
@@ -1797,13 +1844,18 @@ async function calcularFinanceiro() {
   // Badge do operador / info da sessão
   const badgeCaixa = document.getElementById("badge-caixa-operador");
   if (badgeCaixa) {
-    const dAbr = new Date(_sessaoCaixaAtiva.aberto_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
-    const dFch = _sessaoCaixaAtiva.fechado_em
-      ? new Date(_sessaoCaixaAtiva.fechado_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" })
-      : "em aberto";
-    badgeCaixa.textContent = ehGestor
-      ? `📊 Visão geral — sessão ${_sessaoCaixaAtiva.id} (${_sessaoCaixaAtiva.usuario_email}) · ${dAbr} → ${dFch}`
-      : `💼 Seu caixa — aberto ${dAbr} → ${dFch}`;
+    if (!_sessaoCaixaAtiva) {
+      // Gestor consultando sem caixa aberto: mostra período filtrado
+      badgeCaixa.textContent = `📊 Visão por período — ${elInicio.value || "?"} → ${elFim.value || "?"}`;
+    } else {
+      const dAbr = new Date(_sessaoCaixaAtiva.aberto_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+      const dFch = _sessaoCaixaAtiva.fechado_em
+        ? new Date(_sessaoCaixaAtiva.fechado_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" })
+        : "em aberto";
+      badgeCaixa.textContent = ehGestor
+        ? `📊 Visão geral — sessão ${_sessaoCaixaAtiva.id} (${_sessaoCaixaAtiva.usuario_email}) · ${dAbr} → ${dFch}`
+        : `💼 Seu caixa — aberto ${dAbr} → ${dFch}`;
+    }
   }
 
   // Tabelas de despesas e motoboys (código original preservado)
