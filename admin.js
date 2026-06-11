@@ -282,9 +282,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       const optDono = document.getElementById("opt-cargo-dono");
       if (optDono) optDono.style.display = "";
     }
-    // Financeiro visível para todos (funcionário vê apenas o próprio caixa)
+    // Financeiro: visível conforme features_ativas.tabs.financeiro
+    // Para funcionario/gerente pode ser bloqueado via features, mas modal-caixa
+    // continua acessível pelo mini-painel no PDV
     const menuFin = document.getElementById("menu-financeiro");
-    if (menuFin) menuFin.style.display = "flex";
+    if (menuFin) {
+      const finBloqueado = FEATURES_ATIVAS?.tabs?.financeiro === false &&
+        !["dono", "adminMaster"].includes(perfilUsuario);
+      menuFin.style.display = finBloqueado ? "none" : "flex";
+    }
     if (
       perfilUsuario === "dono" ||
       perfilUsuario === "gerente" ||
@@ -1667,52 +1673,29 @@ async function calcularFinanceiro() {
   // ── 1. Carrega/verifica sessão ativa ─────────────────────────────
   await _carregarSessaoCaixa();
 
-  // ── 2. Sem sessão aberta: gestor usa filtro de datas; funcionário vê alerta ─
-  const _TZ_PY = 4 * 60 * 60 * 1000; // UTC-4 Paraguai (ms)
-
-  // Helper: converte YYYY-MM-DD local PY → ISO UTC
-  const _localParaUtc = (ymd, hora) =>
-    new Date(new Date(ymd + hora).getTime() + _TZ_PY).toISOString();
-
-  // Helper: Date → "YYYY-MM-DD" no fuso PY (sem distorção UTC)
-  const _dataLocalPY = (d) => {
-    const loc = new Date(d.getTime() - _TZ_PY);
-    return loc.toISOString().split("T")[0];
-  };
-
-  let utcI, utcF;
-
+  // ── 2. Se não houver sessão aberta, exibe alerta de abertura ─────
   if (!_sessaoCaixaAtiva) {
-    if (!ehGestor) {
-      // Funcionário sem caixa aberto: exibe alerta e para
-      _exibirAlertaAberturaCaixa();
-      return;
-    }
-    // Gestor sem caixa aberto: usa filtro de datas (ou hoje como padrão)
-    const hoje = _dataLocalPY(new Date());
-    if (!elInicio.value) elInicio.value = hoje;
-    if (!elFim.value)    elFim.value    = hoje;
-    utcI = _localParaUtc(elInicio.value, "T00:00:00");
-    utcF = _localParaUtc(elFim.value,    "T23:59:59");
-  } else {
-    // ── 3. Define intervalo de tempo baseado na SESSÃO ─────────────────
-    // BUG 3 FIX: converte aberto_em para data local PY, não UTC, evitando
-    // que sessões que fecham após meia-noite sejam atribuídas ao dia seguinte.
-    const sessaoInicio = _sessaoCaixaAtiva.aberto_em;
-    const sessaoFim    = _sessaoCaixaAtiva.fechado_em || new Date().toISOString();
+    _exibirAlertaAberturaCaixa();
+    return; // não renderiza nada enquanto não houver sessão
+  }
 
-    if (ehGestor && elInicio.value && elFim.value) {
-      // Gestor sobrepõe com filtro manual de datas
-      utcI = _localParaUtc(elInicio.value, "T00:00:00");
-      utcF = _localParaUtc(elFim.value,    "T23:59:59");
-    } else {
-      // Usa intervalo exato da sessão
-      utcI = sessaoInicio;
-      utcF = sessaoFim;
-      // Preenche os campos com a DATA LOCAL PY da abertura/fechamento (Bug 3 fix)
-      if (!elInicio.value) elInicio.value = _dataLocalPY(new Date(sessaoInicio));
-      if (!elFim.value)    elFim.value    = _dataLocalPY(new Date(sessaoFim));
-    }
+  // ── 3. Define intervalo de tempo baseado na SESSÃO, não no calendário ─
+  const sessaoInicio = _sessaoCaixaAtiva.aberto_em;
+  const sessaoFim    = _sessaoCaixaAtiva.fechado_em || new Date().toISOString();
+
+  // Gestores podem sobrepor o intervalo com o filtro de datas da tela
+  let utcI = sessaoInicio;
+  let utcF = sessaoFim;
+  if (ehGestor && elInicio.value && elFim.value) {
+    const _tz = 3 * 60 * 60 * 1000; // UTC-3 PY (horário de verão permanente desde 2024)
+    utcI = new Date(new Date(elInicio.value + "T00:00:00").getTime() + _tz).toISOString();
+    utcF = new Date(new Date(elFim.value   + "T23:59:59").getTime() + _tz).toISOString();
+  } else if (!elInicio.value || !elFim.value) {
+    // Preenche os campos de data com os valores da sessão para exibição
+    const dAbr = new Date(sessaoInicio);
+    elInicio.value = dAbr.toISOString().split("T")[0];
+    const dFch = new Date(sessaoFim);
+    elFim.value    = dFch.toISOString().split("T")[0];
   }
 
   const tipoFiltro    = elTipo.value;
@@ -1747,20 +1730,17 @@ async function calcularFinanceiro() {
   else if (facturaFiltro === "sem_factura")
     peds = peds.filter((p) => !p.dados_factura?.ruc && !p.dados_factura?.ci);
 
-  // ── 5. Movimentações de caixa (só quando há sessão ativa) ─────────
-  let caixa = [];
-  if (_sessaoCaixaAtiva) {
-    let caixaQuery = supa
-      .from("movimentacoes_caixa")
-      .select("*")
-      .eq("sessao_id", _sessaoCaixaAtiva.id); // vínculo direto à sessão
-    if (!ehGestor) caixaQuery = caixaQuery.eq("usuario_email", emailAtual);
-    const { data: caixaData } = await caixaQuery;
-    caixa = caixaData || [];
-  }
+  // ── 5. Movimentações de caixa da SESSÃO ──────────────────────────
+  let caixaQuery = supa
+    .from("movimentacoes_caixa")
+    .select("*")
+    .eq("sessao_id", _sessaoCaixaAtiva.id); // vínculo direto à sessão
+  if (!ehGestor) caixaQuery = caixaQuery.eq("usuario_email", emailAtual);
 
-  // Verifica bloqueio de caixa (sangria limite) — só quando há sessão ativa
-  if (_sessaoCaixaAtiva) _verificarBloqueioCaixa(emailAtual);
+  const { data: caixa } = await caixaQuery;
+
+  // Verifica bloqueio de caixa (sangria limite)
+  _verificarBloqueioCaixa(emailAtual);
 
   // ── 6. Cálculos (inalterado) ──────────────────────────────────────
   const safeNum = (v) => {
@@ -1779,31 +1759,10 @@ async function calcularFinanceiro() {
     faturamento += val;
     qtdPedidos++;
     const pag = (p.forma_pagamento || "").toLowerCase();
-    if (pag === "multipagamento") {
-      // Multipagamento: parceia os valores pelo obs_pagamento
-      try {
-        const partes = JSON.parse(p.obs_pagamento || "[]");
-        if (Array.isArray(partes)) {
-          partes.forEach((parte) => {
-            const pv  = safeNum(parte.valor);
-            const pm  = (parte.metodo || "").toLowerCase();
-            if (pm.includes("pix"))                                       totalPix    += pv;
-            else if (pm.includes("transfer") || pm.includes("alias"))     totalTransf += pv;
-            else if (pm.includes("cartao") || pm.includes("cartão") ||
-                     pm.includes("cartao") || pm.includes("tarjeta"))     totalCartao += pv;
-            else if (pm.includes("efetivo") || pm.includes("dinheiro") ||
-                     pm.includes("efectivo"))                             totalEfetivo += pv;
-            else                                                          totalEfetivo += pv; // fallback
-          });
-        } else { totalEfetivo += val; }
-      } catch (_) { totalEfetivo += val; }
-    } else if (pag.includes("pix"))                                       totalPix    += val;
-    else if (pag.includes("transfer") || pag.includes("alias"))          totalTransf += val;
-    else if (pag.includes("cartao")   || pag.includes("cartão") ||
-             pag.includes("tarjeta"))                                     totalCartao += val;
-    else if (pag.includes("efetivo")  || pag.includes("dinheiro") ||
-             pag.includes("efectivo"))                                    totalEfetivo += val;
-    else                                                                  totalEfetivo += val; // fallback: não perde valor
+    if (pag.includes("pix"))          totalPix    += val;
+    else if (pag.includes("transfer")) totalTransf += val;
+    else if (pag.includes("cartao") || pag.includes("cartão")) totalCartao += val;
+    else if (pag.includes("efetivo") || pag.includes("dinheiro")) totalEfetivo += val;
     if (p.tipo_entrega === "delivery") {
       const taxa = safeNum(p.frete_motoboy) || TAXA_MOTOBOY || 0;
       custoEntregas += taxa;
@@ -1844,18 +1803,13 @@ async function calcularFinanceiro() {
   // Badge do operador / info da sessão
   const badgeCaixa = document.getElementById("badge-caixa-operador");
   if (badgeCaixa) {
-    if (!_sessaoCaixaAtiva) {
-      // Gestor consultando sem caixa aberto: mostra período filtrado
-      badgeCaixa.textContent = `📊 Visão por período — ${elInicio.value || "?"} → ${elFim.value || "?"}`;
-    } else {
-      const dAbr = new Date(_sessaoCaixaAtiva.aberto_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
-      const dFch = _sessaoCaixaAtiva.fechado_em
-        ? new Date(_sessaoCaixaAtiva.fechado_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" })
-        : "em aberto";
-      badgeCaixa.textContent = ehGestor
-        ? `📊 Visão geral — sessão ${_sessaoCaixaAtiva.id} (${_sessaoCaixaAtiva.usuario_email}) · ${dAbr} → ${dFch}`
-        : `💼 Seu caixa — aberto ${dAbr} → ${dFch}`;
-    }
+    const dAbr = new Date(_sessaoCaixaAtiva.aberto_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+    const dFch = _sessaoCaixaAtiva.fechado_em
+      ? new Date(_sessaoCaixaAtiva.fechado_em).toLocaleString("pt-BR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" })
+      : "em aberto";
+    badgeCaixa.textContent = ehGestor
+      ? `📊 Visão geral — sessão ${_sessaoCaixaAtiva.id} (${_sessaoCaixaAtiva.usuario_email}) · ${dAbr} → ${dFch}`
+      : `💼 Seu caixa — aberto ${dAbr} → ${dFch}`;
   }
 
   // Tabelas de despesas e motoboys (código original preservado)
@@ -1919,14 +1873,18 @@ async function _verificarBloqueioCaixa(emailAtual) {
     .maybeSingle();
   if (!cfg?.sangria_limite) return;
 
+  // UTC-3 PY (horario de verao permanente desde 2024)
+  const _tz = 3 * 60 * 60 * 1000;
   const hoje = new Date();
   const dStr = hoje.toISOString().split("T")[0];
+  const dIni = new Date(new Date(dStr + "T00:00:00").getTime() + _tz).toISOString();
+  const dFim = new Date(new Date(dStr + "T23:59:59").getTime() + _tz).toISOString();
   const { data: movs } = await supa
     .from("movimentacoes_caixa")
     .select("tipo, valor")
     .eq("usuario_email", emailAtual)
-    .gte("created_at", dStr + " 00:00:00")
-    .lte("created_at", dStr + " 23:59:59");
+    .gte("created_at", dIni)
+    .lte("created_at", dFim);
 
   let efetivo = 0;
   (movs || []).forEach((m) => {
@@ -2429,7 +2387,11 @@ async function salvarMovimentacaoCaixa() {
       await _abrirSessaoCaixa(valor, desc);
       alert(`✅ Caixa aberto com fundo de Gs ${valor.toLocaleString("es-PY")}!`);
       fecharModal("modal-caixa");
-      calcularFinanceiro();
+      // Atualiza painel de caixa no PDV (caso o modal tenha sido aberto de lá)
+      if (typeof pdvCarregarPainelCaixa === "function") pdvCarregarPainelCaixa();
+      if (document.getElementById("financeiro")?.classList.contains("active")) {
+        calcularFinanceiro();
+      }
       return;
     } catch (e) {
       alert("Erro ao abrir caixa: " + e.message);
@@ -2519,6 +2481,8 @@ Sessão encerrada!`);
 
   // Limpa estado
   _sessaoCaixaAtiva = null;
+  // Atualiza mini-painel do PDV
+  if (typeof pdvCarregarPainelCaixa === "function") pdvCarregarPainelCaixa();
   ["card-faturamento","card-custo-moto","card-lucro","total-pix","total-transf",
    "total-cartao","total-efetivo","card-ticket-medio"].forEach((id) => {
     const el = document.getElementById(id);
@@ -2538,8 +2502,12 @@ async function _buscarDadosRelatorio() {
   const elI = document.getElementById("fin-inicio");
   const elF = document.getElementById("fin-fim");
   const hoje = new Date().toISOString().split("T")[0];
-  const ini = (elI?.value || hoje) + "T00:00:00";
-  const fim = (elF?.value || hoje) + "T23:59:59";
+  // UTC-3 PY (horario de verao permanente desde 2024)
+  const _tz = 3 * 60 * 60 * 1000;
+  const iniDate = elI?.value || hoje;
+  const fimDate = elF?.value || hoje;
+  const ini = new Date(new Date(iniDate + "T00:00:00").getTime() + _tz).toISOString();
+  const fim = new Date(new Date(fimDate + "T23:59:59").getTime() + _tz).toISOString();
   const { data } = await supa
     .from("pedidos")
     .select("*")
@@ -7448,6 +7416,90 @@ async function carregarPDV() {
   renderizarGridPDV();
   atualizarBarraMesasAtivas();
   pdvIniciarTabs();
+  // Carrega mini-painel de caixa no PDV (funciona mesmo com aba financeiro bloqueada)
+  await pdvCarregarPainelCaixa();
+}
+
+/**
+ * Mini-painel de caixa na aba PDV.
+ * Visível para todos os perfis (funcionario, gerente, dono, etc).
+ * Permite abrir o caixa sem precisar acessar a aba financeiro.
+ */
+async function pdvCarregarPainelCaixa() {
+  const container = document.getElementById("pdv-painel-caixa");
+  if (!container) return;
+
+  // Reutiliza _carregarSessaoCaixa se financeiro não foi aberto ainda
+  const ehGestor = ["dono", "gerente", "adminMaster"].includes(perfilUsuario);
+  const emailAtual = document.getElementById("user-email")?.innerText || "";
+
+  let q = supa
+    .from("sessoes_caixa")
+    .select("*")
+    .is("fechado_em", null)
+    .order("aberto_em", { ascending: false })
+    .limit(1);
+  if (!ehGestor) q = q.eq("usuario_email", emailAtual);
+
+  const { data } = await q;
+  const sessao = data?.[0] || null;
+
+  // Sincroniza com _sessaoCaixaAtiva para que salvarMovimentacaoCaixa funcione
+  _sessaoCaixaAtiva = sessao;
+
+  if (!sessao) {
+    container.innerHTML = `
+      <div style="background:#fff3cd;border:1.5px solid #f0a500;border-radius:12px;
+        padding:14px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:700;color:#7a5100;font-size:0.92rem">⚠️ Caixa não aberto</div>
+          <div style="font-size:0.8rem;color:#9a6400;margin-top:2px">
+            Abra o caixa para as vendas serem contabilizadas nesta sessão.
+          </div>
+        </div>
+        <button onclick="abrirModalCaixa('abertura')"
+          style="background:#27ae60;color:#fff;border:none;border-radius:9px;
+            padding:10px 20px;font-weight:700;cursor:pointer;font-size:0.88rem;
+            white-space:nowrap;box-shadow:0 2px 8px rgba(39,174,96,.3)">
+          <i class="fas fa-door-open"></i> Abrir Caixa
+        </button>
+      </div>`;
+  } else {
+    const dAbr = new Date(sessao.aberto_em).toLocaleString("pt-BR", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+    });
+    const podeFechar = ehGestor;
+    container.innerHTML = `
+      <div style="background:#eafaf1;border:1.5px solid #27ae60;border-radius:12px;
+        padding:12px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div style="font-weight:700;color:#1a6b3a;font-size:0.92rem">
+            🟢 Caixa aberto desde ${dAbr}
+          </div>
+          <div style="font-size:0.8rem;color:#2e7d52;margin-top:2px">
+            Operador: ${sessao.usuario_nome || sessao.usuario_email}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="abrirModalCaixa('suprimento')"
+            style="background:#2980b9;color:#fff;border:none;border-radius:8px;
+              padding:8px 14px;font-weight:600;cursor:pointer;font-size:0.82rem">
+            <i class="fas fa-plus-circle"></i> Suprimento
+          </button>
+          <button onclick="abrirModalCaixa('sangria')"
+            style="background:#e67e22;color:#fff;border:none;border-radius:8px;
+              padding:8px 14px;font-weight:600;cursor:pointer;font-size:0.82rem">
+            <i class="fas fa-hand-holding-usd"></i> Sangria
+          </button>
+          ${podeFechar ? `
+          <button onclick="fecharCaixaResumo()"
+            style="background:#2c3e50;color:#fff;border:none;border-radius:8px;
+              padding:8px 14px;font-weight:600;cursor:pointer;font-size:0.82rem">
+            <i class="fas fa-calculator"></i> Fechar Dia
+          </button>` : ""}
+        </div>
+      </div>`;
+  }
 }
 
 let produtosCatsPDV = [];
@@ -9728,7 +9780,7 @@ async function salvarPedidoBalcao() {
 
   // ── Gaveta automática ─────────────────────────────────────────────────────
   // Abre apenas no PDV, para Efetivo, Cartão (déb/créd) e Multipagamento
-  // que contenha ao menos um desses meios. PIX e similares não abrem gaveta.
+  // que contenha ao menos um desses meios. pix e similares não abrem gaveta.
   // Falha silenciosamente — venda NÃO é bloqueada se a gaveta não responder.
   if (_gavetaDeveAbrir(pag, obsPagPDV)) {
     _abrirGavetaDC335(`venda #${novoPedido?.id ?? "PDV"} — ${pag}`);
