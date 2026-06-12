@@ -282,15 +282,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const optDono = document.getElementById("opt-cargo-dono");
       if (optDono) optDono.style.display = "";
     }
-    // Financeiro: visível conforme features_ativas.tabs.financeiro
-    // Para funcionario/gerente pode ser bloqueado via features, mas modal-caixa
-    // continua acessível pelo mini-painel no PDV
-    const menuFin = document.getElementById("menu-financeiro");
-    if (menuFin) {
-      const finBloqueado = FEATURES_ATIVAS?.tabs?.financeiro === false &&
-        !["dono", "adminMaster"].includes(perfilUsuario);
-      menuFin.style.display = finBloqueado ? "none" : "flex";
-    }
+    // A visibilidade do financeiro (e todas as abas) é controlada
+    // inteiramente por _aplicarVisibilidadeAbas() via permissoes_cargo
+    // ou features_ativas.tabs. O mini-painel de caixa no PDV
+    // permite que funcionários abram o caixa sem acessar a aba financeiro.
     if (
       perfilUsuario === "dono" ||
       perfilUsuario === "gerente" ||
@@ -532,13 +527,11 @@ function showTab(tabId, event) {
   }
   if (realTabId === "inventario") {
     if (!perfilUsuario) return; // auth not loaded yet — wait
-    if (
-      perfilUsuario === "dono" ||
-      perfilUsuario === "gerente" ||
-      perfilUsuario === "adminMaster"
-    )
+    // Permissão via permissoes_cargo ou fallback cargo
+    const _podeInv = _feat("tabs", "inventario");
+    if (_podeInv) {
       carregarInventario();
-    else {
+    } else {
       alert("Acesso restrito.");
       showTab("pedidos", null);
     }
@@ -634,9 +627,31 @@ function _aplicarFormasPagamentoPDV(features) {
 
 function _feat(categoria, chave) {
   if (!FEATURES_ATIVAS) return true; // sem config = tudo ativo
+  // Permissões granulares por cargo (permissoes_cargo) têm prioridade
+  // sobre o controle global (tabs/funcionalidades)
+  if (categoria === "tabs" && perfilUsuario) {
+    const pCargo = FEATURES_ATIVAS?.permissoes_cargo?.[perfilUsuario];
+    if (pCargo && Array.isArray(pCargo.tabs)) {
+      return pCargo.tabs.includes(chave);
+    }
+  }
   const cat = FEATURES_ATIVAS[categoria];
   if (!cat) return true;
   return cat[chave] !== false;
+}
+
+/**
+ * Retorna true se o usuário logado pode cancelar pedidos diretamente
+ * (sem solicitar aprovação). Lê de features_ativas.permissoes_cargo
+ * se disponível, cai back para a lógica antiga (dono/adminMaster).
+ */
+function _podeCancelarDireto() {
+  const pCargo = FEATURES_ATIVAS?.permissoes_cargo?.[perfilUsuario];
+  if (pCargo && "pode_cancelar_direto" in pCargo) {
+    return pCargo.pode_cancelar_direto === true;
+  }
+  // fallback: lógica original
+  return ["dono", "adminMaster"].includes(perfilUsuario);
 }
 
 function _aplicarVisibilidadeAbas() {
@@ -658,9 +673,12 @@ function _aplicarVisibilidadeAbas() {
   };
   // adminMaster nunca sofre restrições — ele define as regras
   if (perfilUsuario === "adminMaster") return;
+
   Object.entries(mapa).forEach(([menuId, chave]) => {
     const el = document.getElementById(menuId);
-    if (el && !_feat("tabs", chave)) el.style.display = "none";
+    if (!el) return;
+    const visivel = _feat("tabs", chave);
+    el.style.display = visivel ? "flex" : "none";
   });
   _aplicarFuncionalidades();
 }
@@ -729,11 +747,30 @@ async function salvarFeatures() {
   document.querySelectorAll("[data-feat-pag]").forEach((el) => {
     pagamentos[el.dataset.featPag] = el.checked;
   });
+
+  // ── Permissões granulares por cargo ─────────────────────────────
+  const permissoes_cargo = {};
+  const CARGOS_PERM = ["dono", "gerente", "funcionario", "garcom"];
+  const ABAS_PERM = [
+    "pedidos","cozinha","pdv","financeiro","inventario","produtos",
+    "equipe","configuracoes","dashboard","estatisticas","ficha-tecnica",
+    "crm","mensalistas","turnos",
+  ];
+  CARGOS_PERM.forEach(cargo => {
+    const tabsPermitidas = ABAS_PERM.filter(aba => {
+      const el = document.querySelector(`[data-perm-tab="${aba}"][data-perm-cargo="${cargo}"]`);
+      return el ? el.checked : true; // default: permitido
+    });
+    const podeCancel = document.querySelector(`[data-perm-cancelar][data-perm-cargo="${cargo}"]`)?.checked ?? false;
+    permissoes_cargo[cargo] = { tabs: tabsPermitidas, pode_cancelar_direto: podeCancel };
+  });
+
   const features = {
     tabs,
     tipos_produto: tipos,
     funcionalidades: funcs,
     pagamentos,
+    permissoes_cargo,
   };
   const { error } = await supa
     .from("configuracoes")
@@ -843,12 +880,79 @@ async function renderPainelFeatures() {
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:7px">${grid}</div>
     </div>`;
 
+  // ── Permissões por cargo ────────────────────────────────────────────
+  const CARGOS_UI = [
+    { key: "dono",        label: "🔑 Dono",        cor: "#f59e0b" },
+    { key: "gerente",     label: "👔 Gerente",      cor: "#2980b9" },
+    { key: "funcionario", label: "👷 Funcionário",  cor: "#7f8c8d" },
+    { key: "garcom",      label: "🍽️ Garçom",      cor: "#27ae60" },
+  ];
+  const ABAS_UI = [
+    ["pedidos","📋 Pedidos"],["cozinha","👨‍🍳 Cozinha"],["pdv","🖥️ PDV"],
+    ["financeiro","💰 Financeiro"],["inventario","📦 Inventário"],["produtos","🍽️ Produtos"],
+    ["equipe","👥 Equipe"],["configuracoes","⚙️ Config"],["dashboard","📊 Dashboard"],
+    ["estatisticas","📈 Estatísticas"],["ficha-tecnica","📝 Ficha Técnica"],
+    ["crm","🤝 CRM"],["mensalistas","🗓️ Mensalistas"],["turnos","📺 Turnos"],
+  ];
+  const pCargos = f.permissoes_cargo || {};
+
+  const _chkPerm = (cargo, aba, label) => {
+    const perm = pCargos[cargo];
+    const isChecked = perm?.tabs ? perm.tabs.includes(aba) : true;
+    const cor = CARGOS_UI.find(c => c.key === cargo)?.cor || "#888";
+    return `<label style="display:flex;align-items:center;gap:5px;padding:5px 7px;
+        border-radius:7px;cursor:pointer;font-size:0.78rem;
+        background:${isChecked ? cor + "18" : "#f5f5f5"};
+        border:1.5px solid ${isChecked ? cor : "#ddd"};transition:all .15s">
+      <input type="checkbox" data-perm-tab="${aba}" data-perm-cargo="${cargo}"
+        ${isChecked ? "checked" : ""}
+        onchange="this.closest('label').style.background=this.checked?'${cor}18':'#f5f5f5';
+                  this.closest('label').style.borderColor=this.checked?'${cor}':'#ddd'"
+        style="width:14px;height:14px;accent-color:${cor};flex-shrink:0">
+      ${label}
+    </label>`;
+  };
+
+  const permSection = CARGOS_UI.map(({ key, label, cor }) => {
+    const perm = pCargos[key] || {};
+    const podeCancel = perm.pode_cancelar_direto === true;
+    const abasChk = ABAS_UI.map(([k, l]) => _chkPerm(key, k, l)).join("");
+    return `<div style="border:2px solid ${cor}44;border-radius:12px;padding:14px 16px;background:#fff">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <span style="font-weight:700;font-size:0.92rem;color:${cor}">${label}</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;
+            font-size:0.8rem;font-weight:600;color:#c0392b;
+            background:${podeCancel ? "#fdecea" : "#f5f5f5"};
+            border:1.5px solid ${podeCancel ? "#e74c3c" : "#ddd"};
+            border-radius:8px;padding:5px 10px;transition:all .15s">
+          <input type="checkbox" data-perm-cancelar data-perm-cargo="${key}"
+            ${podeCancel ? "checked" : ""}
+            onchange="this.closest('label').style.background=this.checked?'#fdecea':'#f5f5f5';
+                      this.closest('label').style.borderColor=this.checked?'#e74c3c':'#ddd'"
+            style="width:14px;height:14px;accent-color:#e74c3c;flex-shrink:0">
+          ❌ Pode cancelar diretamente
+        </label>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px">${abasChk}</div>
+    </div>`;
+  }).join("");
+
   const html = `
     <div style="display:grid;gap:14px">
-      ${_sec("📂 Abas visíveis", "Controla o menu lateral para todos os cargos abaixo de adminMaster", chkTabs)}
+      ${_sec("📂 Abas visíveis (global)", "Controla o menu para todos os cargos via regra global. As permissões por cargo abaixo têm prioridade.", chkTabs)}
       ${_sec("💳 Formas de Pagamento", "App do cliente <strong>e</strong> PDV balcão + filtro financeiro", chkPags)}
       ${_sec("🏷️ Tipos de Produto permitidos", "Quais tipos podem ser criados no cardápio", chkTipos)}
       ${_sec("⚙️ Funcionalidades", "Oculta recursos específicos da interface", chkFuncs)}
+      <div style="border:2px solid #e74c3c55;border-radius:14px;padding:16px 18px;background:#fffafa">
+        <h4 style="margin:0 0 4px;color:#c0392b;font-size:0.95rem;font-weight:800">
+          🔐 Permissões Granulares por Cargo
+        </h4>
+        <p style="font-size:0.78rem;color:#999;margin:0 0 14px">
+          Define quais abas cada cargo pode ver <strong>e</strong> se pode cancelar pedidos diretamente
+          (sem solicitar aprovação). Tem prioridade sobre a seção "Abas visíveis" acima.
+        </p>
+        <div style="display:grid;gap:12px">${permSection}</div>
+      </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn btn-primary" onclick="salvarFeatures()" style="flex:1;min-width:160px">
           <i class="fas fa-save"></i> Salvar Configurações
@@ -998,7 +1102,7 @@ async function carregarPedidos(silencioso = false) {
   // ───────────────────────────────────────────────────────────────────────────
 
   // Badge de cancelamento pendente para o dono / adminMaster
-  const _podeCancel = ["dono", "adminMaster"].includes(perfilUsuario);
+  const _podeCancel = _podeCancelarDireto();
   const badgeCancelPendente = _podeCancel
     ? `<span style="background:#e74c3c;color:white;font-size:0.7rem;padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle;">CANC. PENDENTE</span>`
     : "";
