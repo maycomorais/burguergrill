@@ -2694,6 +2694,34 @@ async function fecharCaixaResumo() {
         <div style="display:flex; justify-content:space-between; font-size:1.1rem; font-weight:800; color:#1a7a2e;"><span>💵 RESULTADO:</span>${fmt(lucro)}</div>
         <div style="display:flex; justify-content:space-between; font-size:1rem; font-weight:700; color:#2980b9; margin-top:6px;"><span>🪙 DINHEIRO NA GAVETA:</span>${fmt(dinheiroCaixa)}</div>
       </div>
+
+      <div style="margin-top:18px; padding:14px; background:#f8f9fa; border-radius:12px; border:1.5px solid #e5e7eb; font-family:inherit;">
+        <label style="display:flex; align-items:center; gap:8px; font-weight:700; font-size:0.9rem; cursor:pointer;">
+          <input type="checkbox" id="fecha-incluir-delivery-desp" onchange="_toggleDeliveryDespesaFechamento()" style="width:17px; height:17px; cursor:pointer;">
+          🛵 Incluir pagamento do delivery em despesas?
+        </label>
+        <div id="fecha-delivery-desp-box" style="display:none; margin-top:12px;">
+          <div style="font-size:0.8rem; color:#666; margin-bottom:8px;">
+            Custo de entregas do período: <strong>${fmt(s.custoEntregas)}</strong> — ajuste se necessário.
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <select id="fecha-delivery-forma-pag" style="flex:1; min-width:140px; padding:9px; border:1.5px solid #e0e0e0; border-radius:8px; font-size:0.85rem; font-weight:600;">
+              <option value="Efetivo">💵 Efectivo</option>
+              <option value="Cartao">💳 Tarjeta</option>
+              <option value="CartaoBR">💳🇧🇷 Cartão BR</option>
+              <option value="Pix">🟢 Pix</option>
+              <option value="Transferencia">🏦 Alias/Transferencia</option>
+              <option value="QrPy">📱 QR Paraguay</option>
+            </select>
+            <div style="flex:1; min-width:140px; position:relative;">
+              <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); color:#888; font-size:0.8rem; pointer-events:none;">Gs</span>
+              <input type="number" id="fecha-delivery-valor" min="0" step="1000" value="${Math.round(s.custoEntregas)}"
+                style="width:100%; padding:9px 9px 9px 28px; border:1.5px solid #e0e0e0; border-radius:8px; font-size:0.9rem; font-weight:700; box-sizing:border-box;">
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style="display:flex; gap:10px; margin-top:20px;">
         <button onclick="window.print()" style="flex:1; padding:12px; background:#1a7a2e; color:#fff; border:none; border-radius:8px; font-weight:700; cursor:pointer;">🖨️ Imprimir</button>
         <button onclick="fecharCaixaConfirmar()" style="flex:1; padding:12px; background:#e74c3c; color:#fff; border:none; border-radius:8px; font-weight:700; cursor:pointer;">✅ Fechar Caixa</button>
@@ -2701,6 +2729,13 @@ async function fecharCaixaResumo() {
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Mostra/esconde a forma de pagamento + valor do delivery
+  window._toggleDeliveryDespesaFechamento = function() {
+    const chk = document.getElementById('fecha-incluir-delivery-desp');
+    const box = document.getElementById('fecha-delivery-desp-box');
+    if (box) box.style.display = chk?.checked ? 'block' : 'none';
+  };
 
   // Função de confirmação (será chamada pelo botão)
   window.fecharCaixaConfirmar = async function() {
@@ -2721,6 +2756,25 @@ async function fecharCaixaResumo() {
         usuario_email: document.getElementById('user-email')?.innerText || 'admin',
         sessao_id: _sessaoCaixaAtiva.id
       });
+
+      // NOVO: se marcado, registra o pagamento do delivery/motoboy como
+      // despesa do caixa daquele dia, com a forma de pagamento escolhida.
+      const incluirDelivery = document.getElementById('fecha-incluir-delivery-desp')?.checked;
+      if (incluirDelivery) {
+        const valorDelivery = parseFloat(document.getElementById('fecha-delivery-valor')?.value) || 0;
+        const formaDelivery = document.getElementById('fecha-delivery-forma-pag')?.value || 'Efetivo';
+        if (valorDelivery > 0) {
+          await registrarMovimentacaoCaixa({
+            tipo: 'despesa',
+            valor: valorDelivery,
+            descricao: `Pagamento de delivery/motoboys - ${new Date().toLocaleDateString('pt-BR')}`,
+            usuario_email: document.getElementById('user-email')?.innerText || 'admin',
+            sessao_id: _sessaoCaixaAtiva.id,
+            forma_pagamento: formaDelivery,
+            tipo_despesa: 'motoboy',
+          });
+        }
+      }
 
     } catch(e) {
       console.warn('Aviso fechamento:', e.message);
@@ -9928,19 +9982,29 @@ function atualizarRestanteMultiPDV() {
       "0",
   );
   const inputs = [...document.querySelectorAll('[id^="multi-valor-pdv-"]')];
+
+  // CORRIGIDO: antes, o auto-preenchimento olhava só se o campo estava
+  // "vazio" — então funcionava na 1ª tecla digitada, mas assim que o campo
+  // seguinte recebia esse valor automático ele deixava de estar "vazio" e
+  // parava de acompanhar. Resultado: digitar "50000" no 1º campo só
+  // refletia no 2º campo o valor calculado a partir do "5" (1ª tecla).
+  // Agora usa data-touched (já vinha marcado no oninput, mas não era lido
+  // aqui): só o(s) campo(s) nunca editados manualmente pelo usuário
+  // recebem o auto-preenchimento, e continuam sendo recalculados a cada
+  // tecla digitada nos campos que o usuário de fato editou.
+  const naoTocados = inputs.filter((inp) => inp.dataset.touched !== "1");
+  if (naoTocados.length === 1) {
+    const somaTocados = inputs
+      .filter((inp) => inp !== naoTocados[0])
+      .reduce((s, inp) => s + (parseFloat(inp.value) || 0), 0);
+    const restanteCalc = Math.max(0, total - somaTocados);
+    naoTocados[0].value = restanteCalc || "";
+  }
+
   let soma = 0;
   inputs.forEach((inp) => {
     soma += parseFloat(inp.value) || 0;
   });
-
-  // Auto-fill: se exatamente 1 input vazio e sobra valor
-  const vazios = inputs.filter(
-    (inp) => !inp.value || parseFloat(inp.value) === 0,
-  );
-  if (vazios.length === 1 && total - soma > 0) {
-    vazios[0].value = total - soma;
-    soma = total;
-  }
 
   const bar = document.getElementById("multi-status-pdv");
   const el = document.getElementById("multi-restante-pdv");
@@ -11032,7 +11096,10 @@ async function carregarCupons() {
   tbody.innerHTML = "";
 
   (data || []).forEach((c) => {
-    const tipoLabel = c.tipo === "percentual" ? `${c.valor}%` : "Frete Grátis";
+    const tipoLabel =
+      c.tipo === "percentual" ? `${c.valor}%` :
+      c.tipo === "fixo" ? `Gs ${(c.valor || 0).toLocaleString("es-PY")}` :
+      "Frete Grátis";
     const statusBadge = c.ativo
       ? '<span class="badge badge-success">Ativo</span>'
       : '<span class="badge badge-danger">Inativo</span>';
@@ -11115,21 +11182,24 @@ function alterarTipoCupom() {
   const tipo = document.getElementById("cupom-tipo").value;
   const boxValor = document.getElementById("box-valor-cupom");
   const valorInput = document.getElementById("cupom-valor");
-  // CORRIGIDO: a caixa do valor só era exibida para tipo "percentual" e
-  // ficava com display:none para "fixo" — ou seja, ao criar um cupom de
-  // valor fixo (ex: Gs 50000), o campo pra digitar esse valor nem
-  // aparecia. Só o tipo "frete" (frete grátis) realmente não precisa de
-  // um valor numérico.
+  const labelValor = document.getElementById("label-valor-cupom");
+  const iconValor = document.getElementById("icon-valor-cupom");
+  // A caixa do valor só não faz sentido pro tipo "frete" (frete grátis não
+  // tem valor numérico); "percentual" e "fixo" (NOVO) usam o mesmo campo.
   boxValor.style.display = tipo === "frete" ? "none" : "block";
   if (valorInput) {
     if (tipo === "percentual") {
       // Limite de 100 só faz sentido pra percentual (100%)
       valorInput.max = "100";
       valorInput.placeholder = "Ex: 10";
+      if (labelValor) labelValor.textContent = "Valor do Desconto (%)";
+      if (iconValor) iconValor.className = "fas fa-percent";
     } else {
       // Valor fixo em Gs não tem por que ficar travado em 100
       valorInput.removeAttribute("max");
       valorInput.placeholder = "Ex: 50000";
+      if (labelValor) labelValor.textContent = "Valor do Desconto (Gs)";
+      if (iconValor) iconValor.className = "fas fa-money-bill";
     }
   }
 }

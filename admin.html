@@ -1772,11 +1772,12 @@
               <label><i class="fas fa-percentage"></i> <span data-i18n="cfg.tipo_desconto">Tipo de Desconto</span></label>
               <select id="cupom-tipo" class="input-modern" onchange="alterarTipoCupom()">
                 <option value="percentual" data-i18n="cfg.desconto_percentual_opcao">Desconto Percentual (%)</option>
+                <option value="fixo" data-i18n="cfg.desconto_fixo_opcao">Valor Fixo (Gs)</option>
                 <option value="frete" data-i18n="cfg.frete_gratis_opcao">Frete Grátis</option>
               </select>
             </div>
             <div class="form-group-modern" id="box-valor-cupom">
-              <label><i class="fas fa-percent"></i> <span data-i18n="cfg.valor_desconto_pct">Valor do Desconto (%)</span></label>
+              <label><i class="fas fa-percent" id="icon-valor-cupom"></i> <span id="label-valor-cupom" data-i18n="cfg.valor_desconto_pct">Valor do Desconto (%)</span></label>
               <input type="number" id="cupom-valor" class="input-modern" placeholder="Ex: 10" min="0" max="100">
             </div>
             <div class="form-group-modern">

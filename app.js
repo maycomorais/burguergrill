@@ -2763,6 +2763,9 @@ function atualizarTotalCheckout() {
   if (cupomAplicado) {
     if (cupomAplicado.tipo === "percentual") {
       desconto = Math.round(totalItens * (cupomAplicado.valor / 100));
+    } else if (cupomAplicado.tipo === "fixo") {
+      // NOVO: cupom de valor fixo em Gs — não pode descontar mais que o total
+      desconto = Math.min(cupomAplicado.valor, totalItens);
     } else if (cupomAplicado.tipo === "frete") {
       freteAplicado = 0;
     }
@@ -2859,6 +2862,8 @@ function verificarPagamento() {
       if (cupomAplicado) {
         if (cupomAplicado.tipo === "percentual")
           desconto = Math.round(totalItens * (cupomAplicado.valor / 100));
+        else if (cupomAplicado.tipo === "fixo")
+          desconto = Math.min(cupomAplicado.valor, totalItens); // NOVO
         else if (cupomAplicado.tipo === "frete") frete = 0;
       }
       return totalItens - desconto + frete;
@@ -2916,6 +2921,8 @@ function verificarPagamento() {
     if (cupomAplicado) {
       if (cupomAplicado.tipo === "percentual")
         desconto = Math.round(totalItens * (cupomAplicado.valor / 100));
+      else if (cupomAplicado.tipo === "fixo")
+        desconto = Math.min(cupomAplicado.valor, totalItens); // NOVO
       else if (cupomAplicado.tipo === "frete") freteAplicado = 0;
     }
     const totalGs = totalItens - desconto + freteAplicado;
@@ -2976,6 +2983,8 @@ function _getTotalPedidoAtual() {
   if (cupomAplicado) {
     if (cupomAplicado.tipo === "percentual")
       desconto = Math.round(totalItens * (cupomAplicado.valor / 100));
+    else if (cupomAplicado.tipo === "fixo")
+      desconto = Math.min(cupomAplicado.valor, totalItens); // NOVO
     else if (cupomAplicado.tipo === "frete") freteAplicado = 0;
   }
   return totalItens - desconto + freteAplicado;
@@ -3025,7 +3034,8 @@ function adicionarPartePagamento() {
       <div style="flex:1; position:relative;">
         <span style="position:absolute; left:10px; top:50%; transform:translateY(-50%); color:#888; font-size:0.85rem; pointer-events:none;">Gs</span>
         <input type="number" id="multi-valor-${id}" placeholder="0" min="0" step="1000"
-            oninput="atualizarRestanteMulti()"
+            data-touched="0"
+            oninput="this.dataset.touched='1'; atualizarRestanteMulti()"
             style="width:100%; padding:10px 10px 10px 30px; border:1.5px solid #e0e0e0; border-radius:8px; font-size:0.95rem; font-weight:700; box-sizing:border-box;">
       </div>
       ${
@@ -3089,6 +3099,22 @@ function removerPartePagamento(id) {
 function atualizarRestanteMulti(atualizarPix = true) {
   const total = _getTotalPedidoAtual();
   const inputs = [...document.querySelectorAll('[id^="multi-valor-"]')];
+
+  // CORRIGIDO: mesmo bug do PDV — o auto-preenchimento só olhava se o
+  // campo estava "vazio", então só refletia a 1ª tecla digitada no outro
+  // campo e parava de acompanhar depois disso. Agora usa data-touched:
+  // só o campo nunca editado manualmente pelo usuário recebe o valor
+  // automático, e continua sendo recalculado a cada tecla digitada nos
+  // campos que o usuário realmente preencheu.
+  const naoTocados = inputs.filter((inp) => inp.dataset.touched !== "1");
+  if (naoTocados.length === 1) {
+    const somaTocados = inputs
+      .filter((inp) => inp !== naoTocados[0])
+      .reduce((s, inp) => s + (parseFloat(inp.value) || 0), 0);
+    const restanteCalc = Math.max(0, total - somaTocados);
+    naoTocados[0].value = restanteCalc || "";
+  }
+
   let soma = 0;
   inputs.forEach((inp) => {
     soma += parseFloat(inp.value) || 0;
@@ -3097,16 +3123,6 @@ function atualizarRestanteMulti(atualizarPix = true) {
   const restante = total - soma;
   const bar = document.getElementById("multi-status-bar");
   const el = document.getElementById("multi-restante");
-
-  // ── AUTO-FILL: se há exatamente 1 input vazio e ainda sobra valor, preenche ──
-  const inputsVazios = inputs.filter(
-    (inp) => !inp.value || parseFloat(inp.value) === 0,
-  );
-  if (inputsVazios.length === 1 && restante > 0) {
-    inputsVazios[0].value = restante;
-    // Recalcula com o novo valor preenchido
-    soma = total;
-  }
 
   if (!el || !bar) return;
   bar.style.display = "block";
@@ -3428,19 +3444,9 @@ async function enviarZap() {
         "Adicione pelo menos 2 formas de pagamento para o multipagamento.",
       );
     const somaPartes = partes.reduce((s, p) => s + p.valor, 0);
-    const totalCheck =
-      carrinho.reduce((a, i) => a + i.preco * i.qtd, 0) -
-      (cupomAplicado?.tipo === "percentual"
-        ? Math.round(
-            carrinho.reduce((a, i) => a + i.preco * i.qtd, 0) *
-              (cupomAplicado.valor / 100),
-          )
-        : 0) +
-      (modoEntrega === "delivery"
-        ? cupomAplicado?.tipo === "frete"
-          ? 0
-          : freteCalculado
-        : 0);
+    // Reutiliza _getTotalPedidoAtual() (já corrigido para cupom "fixo")
+    // em vez de duplicar essa conta mais uma vez só com "percentual"/"frete".
+    const totalCheck = _getTotalPedidoAtual();
     if (Math.abs(somaPartes - totalCheck) > 1) {
       return alert(
         `A soma dos pagamentos (Gs ${somaPartes.toLocaleString("es-PY")}) não confere com o total do pedido (Gs ${totalCheck.toLocaleString("es-PY")}). Ajuste os valores.`,
@@ -3470,6 +3476,9 @@ async function enviarZap() {
   if (cupomAplicado) {
     if (cupomAplicado.tipo === "percentual") {
       desconto = Math.round(totalItens * (cupomAplicado.valor / 100));
+    } else if (cupomAplicado.tipo === "fixo") {
+      // NOVO: cupom de valor fixo em Gs — não pode descontar mais que o total
+      desconto = Math.min(cupomAplicado.valor, totalItens);
     } else if (cupomAplicado.tipo === "frete") {
       freteAplicado = 0;
     }
