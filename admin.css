@@ -768,7 +768,17 @@ select.form-control, select.input-modern {
 /* ── Right column: Order ────────────────────────────────── */
 .pdv-col-dir {
     display: flex; flex-direction: column;
-    background: #fff; overflow: hidden;
+    background: #fff;
+    /* CORRIGIDO: overflow:hidden aqui fazia o botão "Finalizar Venda"
+       (dentro de .pdv-dir-footer) sumir sempre que o conteúdo acima dele
+       crescia além da altura fixa da coluna — o que acontece facilmente no
+       Multipagamento, que soma 2+ cards de forma de pagamento + barra de
+       status. Como não havia scroll nenhum na coluna, o conteúdo que
+       ultrapassava a altura simplesmente ficava invisível (cortado), em
+       vez de aparecer com uma barra de rolagem. Trocado para overflow-y:
+       auto — na pior das hipóteses agora dá pra rolar até o botão, em vez
+       dele sumir por completo. */
+    overflow-y: auto;
 }
 .pdv-dir-titulo {
     padding: 9px 10px 7px;
@@ -866,6 +876,12 @@ select.form-control, select.input-modern {
 .pdv-dir-footer {
     display: flex; gap: 6px;
     padding: 7px 8px; border-top: 1px solid #ddd; flex-shrink: 0;
+    /* NOVO: fixa o rodapé (Cancelar/Finalizar) na base da coluna rolável,
+       para ficar sempre visível/alcançável mesmo quando o conteúdo acima
+       (ex.: Multipagamento) cresce bastante. */
+    position: sticky; bottom: 0;
+    background: #fff;
+    z-index: 10;
 }
 .pdv-btn-cancelar {
     padding: 9px 10px; background: #ffeaea; color: #c0392b;
@@ -955,7 +971,9 @@ select.form-control, select.input-modern {
     /* Mobile: right column full width */
     .pdv-col-dir {
         height: calc(100vh - 200px);
-        overflow-y: hidden;
+        /* CORRIGIDO: mesmo bug do desktop — overflow-y:hidden escondia o
+           botão de finalizar quando o Multipagamento crescia. */
+        overflow-y: auto;
     }
     .pdv-dir-bottom-scroll {
         max-height: 38vh;
